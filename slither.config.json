@@ -1,0 +1,8 @@
+{
+    "foundry_out_directory": "artifacts",
+    "foundry_ignore_compile": true,
+    "filter_paths": "(lib/|test/)",
+    "skip_clean": true,
+    "legacy_ast": true,
+    "detectors_to_exclude": "solc-version,naming-convention,assembly,low-level-calls,weak-prng,too-many-digits"
+}

@@ -5,12 +5,11 @@ pragma solidity 0.8.18;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-contract Shibart is ERC20, Ownable {
+import "./interfaces/IShibart.sol";
+
+contract Shibart is ERC20, Ownable, IShibart {
     address public raiser;
     uint256 public supplyCap;
-
-    event PulseRaiserSet(address indexed raiser);
-    event Distributed(address indexed account, uint256 indexed amount);
 
     constructor(
         address premintTo_,
@@ -39,6 +38,8 @@ contract Shibart is ERC20, Ownable {
 
     function distribute(address account, uint256 amount) external {
         _onlyPulseRaiser();
+        require(account != address(0), "Zero Account");
+        require(amount > 0, "Zero Amount");
         require(totalSupply() + amount <= supplyCap, "Supply Cap Exceeded");
         emit Distributed(account, amount);
         _mint(account, amount);

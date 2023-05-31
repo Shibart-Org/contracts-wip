@@ -19,6 +19,6 @@ contract OwnablePausable is Ownable, Pausable, IOwnablePausableEvents {
     }
 
     function _requireNotPaused() internal view virtual override {
-        require(!paused(), "Sale Paused");
+        require(!paused(), "Contract Paused");
     }
 }

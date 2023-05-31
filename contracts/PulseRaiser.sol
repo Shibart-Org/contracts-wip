@@ -67,7 +67,8 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         address[] memory feeds_,
         NormalizationStrategy strategy_
     ) Normalizer(strategy_, canonicalStable_, uniswapFactory_) {
-        require(token_ != address(0), "Zero Generation Token Addr");
+        // NOTE: ignore token_ being address(0); this would indicate
+        // a collatable deployment that doesn't need a token
         require(wrappedNative_ != address(0), "Zero Wrapped Native Token");
         if (strategy_ != NormalizationStrategy.PriceFeed) {
             require(
@@ -89,7 +90,9 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
 
         wrappedNative = wrappedNative_;
 
-        token = IGenerationToken(token_);
+        if (token_ != address(0)) {
+            token = IGenerationToken(token_);
+        }
 
         if (assets_.length > 0) {
             _controlAssetsWhitelisting(assets_, feeds_);
@@ -150,9 +153,9 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
             normalizedAmount += _normalize(wrappedNative, msg.value);
         }
 
-        require(normalizedAmount > 0, "Insufficient Contribution");
-
         uint256 pointAmount = (points * normalizedAmount) / _currentPrice();
+
+        require(pointAmount > 0, "Insufficient Contribution");
 
         pointsGained[account] += pointAmount;
 
@@ -201,7 +204,9 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
             pointsTotal += points_;
         }
 
-        token.distribute(account, pointsTotal * tokenPerPoint);
+        if (pointsTotal > 0) {
+            token.distribute(account, pointsTotal * tokenPerPoint);
+        }
     }
 
     //
@@ -236,16 +241,18 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         uint256 pointsOtherNetworks
     ) external {
         _checkOwner();
+        require(address(token) != address(0), "Not the Primary Contract");
         require(
             block.timestamp >= launchAt + DAYS * 1 days,
             "Wait for Sale to Complete"
         );
+        require(!claimsEnabled, "Distribution Locked");
         uint256 pointsTotal = pointsLocal + pointsOtherNetworks;
 
         uint256 distributionSupply = token.distributionSupply();
 
         tokenPerPoint = distributionSupply / pointsTotal;
-    
+
         merkleRoot = merkleRoot_;
         emit TotalPointsAllocated(pointsTotal, tokenPerPoint);
     }
@@ -286,7 +293,6 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     function _encodePriceBases(
         uint16[] calldata bases_
     ) private pure returns (uint256 encode) {
-        require(bases_.length == DAYS, "Expected PPP for 20 Days");
         for (uint8 d = 0; d < DAYS; d++) {
             encode = encode | (uint256(bases_[d]) << (d * 10));
         }
@@ -295,7 +301,6 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     function _encodePriceBasesMemory(
         uint16[] memory bases_
     ) private pure returns (uint256 encode) {
-        require(bases_.length == DAYS, "Expected PPP for 20 Days");
         for (uint8 d = 0; d < DAYS; d++) {
             encode = encode | (uint256(bases_[d]) << (d * 10));
         }

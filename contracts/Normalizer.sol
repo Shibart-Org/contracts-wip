@@ -3,11 +3,15 @@
 pragma solidity 0.8.18;
 
 import "@chainlink/interfaces/AggregatorV3Interface.sol";
+import "@chainlink/interfaces/AggregatorV2V3Interface.sol";
+// https://docs.chain.link/data-feeds/l2-sequencer-feeds
 import "@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./defs/NormalizationStrategy.sol";
 import "./OwnablePausable.sol";
+
+import "./interfaces/INormalizer.sol";
 
 interface IUniswapV2Router {
     function getAmountsOut(
@@ -20,9 +24,18 @@ interface IERC20Metadata {
     function decimals() external view returns (uint8);
 }
 
-abstract contract Normalizer is OwnablePausable {
-    event AssetDisabled(address indexed asset);
-    event AssetEnabled(address indexed asset, address indexed feed);
+abstract contract Normalizer is OwnablePausable, INormalizer {
+    address public constant ARB_MAINNET_SEQ_FEED =
+        0xFdB631F5EE196F0ed6FAa767959853A9F217697D;
+    address public constant ARB_GOERLI_SEQ_FEED =
+        0x4da69F028a5790fCCAfe81a75C0D24f46ceCDd69;
+
+    uint256 private constant ARBITRUM_ONE = 42161;
+    uint256 private constant ARBITRUM_NOVA = 42170;
+    uint256 private constant ARBITRUM_GOERLI = 421613;
+    uint256 private constant GRACE_PERIOD_TIME = 3600;
+
+    AggregatorV2V3Interface public sequencerUptimeFeed;
 
     // for Uniswap V3
     uint24 private constant FEE = 3000;
@@ -51,6 +64,12 @@ abstract contract Normalizer is OwnablePausable {
             canonicalStable = canonicalStable_;
         }
         strategy = strategy_;
+
+        if (block.chainid == ARBITRUM_ONE || block.chainid == ARBITRUM_NOVA) {
+            sequencerUptimeFeed = AggregatorV2V3Interface(ARB_MAINNET_SEQ_FEED);
+        } else if (block.chainid == ARBITRUM_GOERLI) {
+            sequencerUptimeFeed = AggregatorV2V3Interface(ARB_GOERLI_SEQ_FEED);
+        }
     }
 
     //
@@ -103,9 +122,9 @@ abstract contract Normalizer is OwnablePausable {
             require(assets_[f] != address(0), "Zero Asset Address");
             stables[assets_[f]] = states_[f];
             if (states_[f]) {
-                emit AssetDisabled(assets_[f]);
-            } else {
                 emit AssetEnabled(assets_[f], assets_[f]);
+            } else {
+                emit AssetDisabled(assets_[f]); 
             }
         }
     }
@@ -147,11 +166,36 @@ abstract contract Normalizer is OwnablePausable {
         address token,
         uint256 amount
     ) internal view returns (uint256) {
+        _ensureSequencerUp();
         AggregatorV3Interface priceFeed = AggregatorV3Interface(feeds[token]);
 
         (, int price, , , ) = priceFeed.latestRoundData();
 
         return (uint256(price) * amount) / (10 ** priceFeed.decimals());
+    }
+
+    function _ensureSequencerUp() internal view {
+        // short-circuit if we're not on Arbitrum
+        if (address(sequencerUptimeFeed) == address(0)) return;
+
+        // prettier-ignore
+        (
+            /*uint80 roundID*/,
+            int256 answer,
+            uint256 startedAt,
+            /*uint256 updatedAt*/,
+            /*uint80 answeredInRound*/
+        ) = sequencerUptimeFeed.latestRoundData();
+
+        // Answer == 0: Sequencer is up
+        // Answer == 1: Sequencer is down
+        bool isSequencerUp = answer == 0;
+        require(isSequencerUp, "ARB: Sequencer Is Down");
+
+        // Make sure the grace period has passed after the
+        // sequencer is back up.
+        uint256 timeSinceUp = block.timestamp - startedAt;
+        require(timeSinceUp > GRACE_PERIOD_TIME, "ARB: Grace Period Not Over");
     }
 
     function _uniV2Normalize(
