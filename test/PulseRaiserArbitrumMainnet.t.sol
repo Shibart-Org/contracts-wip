@@ -50,6 +50,7 @@ contract PulseRaiserArbitrumMainnetTest is PulseRaiserCommons {
         vm.selectFork(fork);
 
         deployer = vm.addr(1);
+        // not used anymore, wallet now hardcoded
         raiseWallet = vm.addr(2);
         defaultAccount = vm.addr(3);
         vm.label(address(gt), "GenerationToken");
@@ -80,8 +81,7 @@ contract PulseRaiserArbitrumMainnetTest is PulseRaiserCommons {
             ARBITRUM_WRAPPED_NATIVE,
             ARBITRUM_NORMALIZATION_TOKEN,
             ARBITRUM_UNISWAP_ROUTER,
-            raiseWallet,
-            uint32(block.timestamp) + LAUNCH_OFFSET,
+            deployer,
             POINTS,
             stables,
             assets,
@@ -89,6 +89,14 @@ contract PulseRaiserArbitrumMainnetTest is PulseRaiserCommons {
             NormalizationStrategy.PriceFeed
         );
         deploymentTime = uint32(block.timestamp);
+
+        vm.expectRevert("Sale Time Not Set");
+        pRaiser.contribute{value: 1 ether}(address(0), 0, address(0));
+
+        vm.prank(deployer);
+        pRaiser.launch(deploymentTime + LAUNCH_OFFSET);
+
+
         vm.label(address(pRaiser), "ArbitrumRaiser");
     }
 

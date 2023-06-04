@@ -80,6 +80,55 @@ contract PulseRaiserCommons is
     PulseRaiser pRaiser;
 
     //#region owner-only fns
+    function test_launch_non_owner_reverts() public {
+        vm.expectRevert("Ownable: caller is not the owner");
+        vm.prank(defaultAccount);
+        pRaiser.launch(0);
+    }
+
+    function test_launch_now_executes() public {
+        vm.warp(block.timestamp + 100);
+        assertNotEq(pRaiser.launchAt(), block.timestamp);
+
+        vm.expectEmit(true, true, false, false, address(pRaiser));
+        emit LaunchTimeSet(uint32(block.timestamp));
+        vm.prank(deployer);
+        pRaiser.launch(0);
+        assertEq(pRaiser.launchAt(), block.timestamp);
+    }
+
+    function test_past_timestamp_reverts() public {
+        vm.expectRevert("Future Timestamp Expected");
+        vm.prank(deployer);
+        pRaiser.launch(uint32(block.timestamp));
+
+        vm.expectRevert("Future Timestamp Expected");
+        vm.prank(deployer);
+        pRaiser.launch(uint32(block.timestamp - 1));
+    }
+
+    function test_setRaiseWallet_non_owner_reverts() public {
+        vm.expectRevert("Ownable: caller is not the owner");
+        vm.prank(defaultAccount);
+        pRaiser.setRaiseWallet(address(0));
+    }
+
+    function test_setRaiseWallet_zero_wallet_reverts() public {
+        vm.expectRevert("Zero Wallet Addr");
+        vm.prank(deployer);
+        pRaiser.setRaiseWallet(address(0));
+    }
+
+    function test_setRaiseWallet_executes() public {
+        address oldWallet = pRaiser.wallet();
+        address newWallet = vm.addr(100000000000000);
+        vm.expectEmit(true, true, true, false, address(pRaiser));
+        emit RaiseWalletUpdated(oldWallet, newWallet);
+        vm.prank(deployer);
+        pRaiser.setRaiseWallet(newWallet);
+        assertEq(pRaiser.wallet(), newWallet);
+    }
+
     function test_modifyPriceBase_non_owner_reverts() public {
         uint8 dayIndex_ = 0;
         uint16 priceBase_ = 1;
@@ -323,7 +372,7 @@ contract PulseRaiserCommons is
         vm.warp(pRaiser.launchAt() + 1);
 
         vm.prank(account, account);
-        pRaiser.contribute(canonicalNormalizationToken, 0.1 ether);
+        pRaiser.contribute(canonicalNormalizationToken, 0.1 ether, address(0));
 
         vm.warp(pRaiser.launchAt() + 20 days + 1);
 
@@ -435,7 +484,7 @@ contract PulseRaiserCommons is
 
         vm.expectRevert("Contract Paused");
         vm.prank(defaultAccount, defaultAccount);
-        pRaiser.contribute(canonicalNormalizationToken, 1 ether);
+        pRaiser.contribute(canonicalNormalizationToken, 1 ether, address(0));
     }
 
     function test_contribute_not_in_progress_reverts() public {
@@ -450,13 +499,13 @@ contract PulseRaiserCommons is
 
         vm.expectRevert("Sale Not In Progress");
         vm.prank(defaultAccount, defaultAccount);
-        pRaiser.contribute(canonicalNormalizationToken, 1 ether);
+        pRaiser.contribute(canonicalNormalizationToken, 1 ether, address(0));
 
         vm.warp(deploymentTime + LAUNCH_OFFSET + 20 days + 1);
 
         vm.expectRevert("Sale Ended");
         vm.prank(defaultAccount, defaultAccount);
-        pRaiser.contribute(canonicalNormalizationToken, 1 ether);
+        pRaiser.contribute(canonicalNormalizationToken, 1 ether, address(0));
     }
 
     function test_contribute_not_an_eoa_reverts() public {
@@ -471,7 +520,7 @@ contract PulseRaiserCommons is
 
         vm.expectRevert("Caller Not an EOA");
         vm.prank(defaultAccount, deployer);
-        pRaiser.contribute(canonicalNormalizationToken, 1 ether);
+        pRaiser.contribute(canonicalNormalizationToken, 1 ether, address(0));
     }
 
     function test_contribute_insufficient_contribution_reverts() public {
@@ -483,11 +532,36 @@ contract PulseRaiserCommons is
 
         vm.expectRevert("Insufficient Contribution");
         vm.prank(defaultAccount, defaultAccount);
-        pRaiser.contribute(canonicalNormalizationToken, 2);
+        pRaiser.contribute(canonicalNormalizationToken, 2, address(0));
     }
 
     function test_contribute_executes() public {
-        // SEE ELSEWHERE
+        address[] memory tokens = new address[](4);
+        tokens[0] = canonicalNormalizationToken;
+        tokens[1] = wrappedNative;
+        tokens[2] = wrappedBtc;
+        tokens[3] = usdcToken;
+        uint256 amount = 1 ether;
+        vm.warp(deploymentTime + LAUNCH_OFFSET + 1);
+
+        for (uint8 t = 0; t < tokens.length; t++) {
+            _execute_contribute(tokens[t], amount);
+        }
+    }
+
+    function _execute_contribute(address token, uint256 amount) internal {
+        deal(token, defaultAccount, amount);
+        vm.prank(defaultAccount, defaultAccount);
+        IERC20USDT(token).approve(address(pRaiser), amount);
+
+        uint256 rWalletBalancePre = IERC20(token).balanceOf(pRaiser.wallet());
+
+        vm.prank(defaultAccount, defaultAccount);
+        pRaiser.contribute(token, amount, address(0));
+
+        uint256 rWalletBalancePost = IERC20(token).balanceOf(pRaiser.wallet());
+
+        assertEq(rWalletBalancePost - rWalletBalancePre, amount);
     }
 
     function test_claim_paused_reverts() public {
@@ -656,7 +730,7 @@ contract PulseRaiserCommons is
         );
 
         vm.prank(defaultAccount, defaultAccount);
-        pRaiser.contribute(canonicalNormalizationToken, 1 ether);
+        pRaiser.contribute(canonicalNormalizationToken, 1 ether, address(0));
 
         vm.warp(pRaiser.launchAt() + 20 days + 1);
 
@@ -863,10 +937,7 @@ contract PulseRaiserCommons is
             vm.warp(deploymentTime + LAUNCH_OFFSET + 1 + (1 days) * d);
 
             // WETH is used to estimate points for both ETH and WETH
-            uint256 ethWethPoints = pRaiser.estimate(
-                wrappedNative,
-                .5 ether
-            );
+            uint256 ethWethPoints = pRaiser.estimate(wrappedNative, .5 ether);
             uint256 wbtcPoints = pRaiser.estimate(wrappedBtc, 0.5 ether);
             uint256 usdtPoints = pRaiser.estimate(
                 canonicalNormalizationToken,
@@ -919,7 +990,7 @@ contract PulseRaiserCommons is
 
         uint256 accountPointsGainedPre = pRaiser.pointsGained(account);
         vm.prank(account, account);
-        pRaiser.contribute{value: amount}(address(0), 100);
+        pRaiser.contribute{value: amount}(address(0), 100, address(0));
 
         uint256 accountPointsGainedPost = pRaiser.pointsGained(account);
         assertEq(
@@ -938,10 +1009,7 @@ contract PulseRaiserCommons is
         deal(wrappedNative, account, amountEth);
         deal(account, amountWeth);
 
-        assertEq(
-            IERC20(wrappedNative).balanceOf(account),
-            amountWeth
-        );
+        assertEq(IERC20(wrappedNative).balanceOf(account), amountWeth);
         vm.prank(account, account);
         IERC20(wrappedNative).approve(address(pRaiser), amountWeth);
 
@@ -949,7 +1017,8 @@ contract PulseRaiserCommons is
         vm.prank(account, account);
         pRaiser.contribute{value: amountEth}(
             wrappedNative,
-            amountWeth
+            amountWeth,
+            address(0)
         );
         uint256 accountPointsGainedPost = pRaiser.pointsGained(account);
         // NOTE: because amounts are rounded due to solidity division,
@@ -982,7 +1051,7 @@ contract PulseRaiserCommons is
 
         uint256 accountPointsGainedPre = pRaiser.pointsGained(account);
         vm.prank(account, account);
-        pRaiser.contribute(token, amount);
+        pRaiser.contribute(token, amount, address(0));
         uint256 accountPointsGainedPost = pRaiser.pointsGained(account);
         assertEq(
             accountPointsGainedPost - accountPointsGainedPre,

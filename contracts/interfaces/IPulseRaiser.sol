@@ -34,6 +34,9 @@ interface IPulseRaiser is IPulseRaiserEvents {
     // current normalized price of 10k points
     function currentPrice() external view returns (uint256);
 
+    // tomorrow's normalized price of 10k points; 0 if sale ends before that
+    function nextPrice() external view returns (uint256);
+
     //
     // - MUTATORS
     //
@@ -44,7 +47,7 @@ interface IPulseRaiser is IPulseRaiserEvents {
     // - Token is whitelisted;
     // - The sale is in progress.
     // - The contract is not paused.
-    function contribute(address token, uint256 tokenAmount) external payable;
+    function contribute(address token, uint256 tokenAmount, address referral) external payable;
 
     // @dev Claim token based on accumulated points. If a Merkle proof is supplied,
     //      will also claim based on tokens accumulated on other chains. If not, only
@@ -87,4 +90,16 @@ interface IPulseRaiser is IPulseRaiserEvents {
 
     // @dev Owner-only. Open claiming of token. `collate` must have been called first.
     function distribute() external;
+
+    // @dev Owner-only. Set launch time. 
+    //
+    // @param at If 0, sets the launch time to block.timestamp and starts the sale immediately.
+    //           Must be above block.timestamp otherwise (in the future).
+    function launch(uint32 at) external;
+     
+
+    // @dev Owner-only. Change the raise wallet address.
+    // 
+    // @param wallet_ The address of the new wallet. Cannot be address(0).
+    function setRaiseWallet(address wallet_) external;
 }

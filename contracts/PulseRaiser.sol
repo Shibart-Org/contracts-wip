@@ -16,7 +16,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     // use sendValue to transfer native currency
     using Address for address payable;
 
-    address internal immutable wallet;
+    address public wallet;
 
     // 1111111111, see pppval
     uint256 private constant LOWEST_10_BITS_MASK = 1023;
@@ -31,7 +31,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     // The amount of points allocated to each day's normalized price
     uint32 public immutable points;
     // The sale starts at this time
-    uint32 public immutable launchAt;
+    uint32 public launchAt;
 
     // Instead of storing 20 uint256 price values for 20 days, which takes 20 SSTOREs
     // use a single slot to encode reduced prices for each day. A day's price is contained
@@ -60,7 +60,6 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         address canonicalStable_,
         address uniswapFactory_,
         address wallet_,
-        uint32 launchAt_,
         uint32 points_,
         address[] memory stables_,
         address[] memory assets_,
@@ -80,9 +79,6 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
 
         require(wallet_ != address(0), "Zero Wallet Addr");
         require(points_ > 0, "Zero Points");
-
-        // start day 1 on deployment if launchAt_ is 0
-        launchAt = (launchAt_ > 0) ? launchAt_ : uint32(block.timestamp);
 
         points = points_;
 
@@ -133,10 +129,18 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         return _currentPrice();
     }
 
+    function nextPrice() external view returns (uint256) {
+        return _nextPrice();
+    }
+
     //
     // - MUTATORS
     //
-    function contribute(address token_, uint256 tokenAmount) external payable {
+    function contribute(
+        address token_,
+        uint256 tokenAmount,
+        address referral
+    ) external payable {
         _requireNotPaused();
         _requireSaleInProgress();
         _requireEOA();
@@ -163,6 +167,10 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         raiseLocal += normalizedAmount;
 
         emit PointsGained(account, pointAmount);
+
+        if (referral != address(0)) {
+            emit Referral(referral, normalizedAmount);
+        }
 
         if (token_ != address(0)) {
             IERC20(token_).safeTransferFrom(account, wallet, tokenAmount);
@@ -212,6 +220,25 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     //
     // - MUTATORS (ADMIN)
     //
+    function launch(uint32 at) external {
+        _checkOwner();
+        if (at == 0) {
+            launchAt = uint32(block.timestamp);
+        } else {
+            require(at > block.timestamp, "Future Timestamp Expected");
+            launchAt = at;
+        }
+        emit LaunchTimeSet(launchAt);
+    }
+
+    function setRaiseWallet(address wallet_) external {
+        _checkOwner();
+        require(wallet_ != address(0), "Zero Wallet Addr");
+
+        emit RaiseWalletUpdated(wallet, wallet_);
+        wallet = wallet_;
+    }
+
     function modifyPriceBase(uint8 dayIndex_, uint16 priceBase_) external {
         _checkOwner();
         _requireDayInRange(dayIndex_);
@@ -274,6 +301,14 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         uint8 dayIndex = uint8((block.timestamp - launchAt) / 1 days);
 
         return _pppval(dayIndex);
+    }
+
+    function _nextPrice() internal view returns (uint256) {
+        uint256 tmrwIndex = ((block.timestamp - launchAt) / 1 days) + 1;
+
+        if (tmrwIndex > 19) return 0;
+
+        return _pppval(uint8(tmrwIndex));
     }
 
     function _pppval(uint8 dayIndex) internal view returns (uint256) {
@@ -364,6 +399,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     }
 
     function _requireSaleInProgress() internal view {
+        require(launchAt > 0, "Sale Time Not Set");
         require(block.timestamp >= launchAt, "Sale Not In Progress");
         require(block.timestamp <= launchAt + DAYS * 1 days, "Sale Ended");
     }
