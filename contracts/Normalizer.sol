@@ -20,7 +20,7 @@ interface IUniswapV2Router {
     ) external view returns (uint[] memory amounts);
 }
 
-interface IERC20Metadata {
+interface IERC20Metadata_ {
     function decimals() external view returns (uint8);
 }
 
@@ -259,8 +259,8 @@ abstract contract Normalizer is OwnablePausable, INormalizer {
         address token1,
         uint256 amount
     ) internal view returns (uint256) {
-        uint8 estimatedTokenDecimals = IERC20Metadata(token0).decimals();
-        uint8 normalizationTokenDecimals = IERC20Metadata(token1).decimals();
+        uint8 estimatedTokenDecimals = IERC20Metadata_(token0).decimals();
+        uint8 normalizationTokenDecimals = IERC20Metadata_(token1).decimals();
         uint8 decimalsDiff = (estimatedTokenDecimals >
             normalizationTokenDecimals)
             ? estimatedTokenDecimals - normalizationTokenDecimals

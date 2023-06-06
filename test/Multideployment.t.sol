@@ -26,6 +26,8 @@ interface IShibart {
 }
 
 interface IPulseRaiserExt is IPulseRaiser {
+    function PERIOD_SECONDS() external view returns (uint256);
+
     function launchAt() external view returns (uint32);
 
     function pointsGained(address account) external view returns (uint256);
@@ -331,7 +333,8 @@ contract MultideploymentTest is Test, Deplooyer {
         uint256 amount
     ) public {
         vm.selectFork(fork);
-        vm.warp(IPulseRaiserExt(raiser).launchAt() + day * 1 days + 1);
+        uint256 periodS = IPulseRaiserExt(raiser).PERIOD_SECONDS();
+        vm.warp(IPulseRaiserExt(raiser).launchAt() + day * periodS + 1);
 
         for (
             uint256 r = startWithContributor;
