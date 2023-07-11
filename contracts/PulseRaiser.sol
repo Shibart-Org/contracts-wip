@@ -7,7 +7,6 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 
 import "./ClaimTracker.sol";
 import "./Normalizer.sol";
-import "./interfaces/IShibart.sol";
 import "./interfaces/IPulseRaiser.sol";
 
 contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
@@ -22,7 +21,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     uint256 private constant LOWEST_10_BITS_MASK = 1023;
 
     // DO NOT MODIFY the PERIODS constant
-    uint8 private constant PERIODS = 20;
+    uint8 public constant PERIODS = 30;
     uint256 public constant PERIOD_SECONDS = 1 days;
 
     //
@@ -34,10 +33,11 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     // The sale starts at this time
     uint32 public launchAt;
 
-    // Instead of storing 20 uint256 price values for 20 days, which takes 20 SSTOREs
-    // use a single slot to encode reduced prices for each day. A day's price is contained
-    // in a 10-bit span, 20x10 == 200 bits, which fits into a uint256.
-    uint256 public encodedpp = _encodeInitialPriceBases();
+    // Instead of storing 30 uint256 price values for 30 days, which takes 30 SSTOREs
+    // use two slots to encode reduced prices for each day. A day's price is contained
+    // in a 10-bit span, 25x10 == 250 bits (which fits into a uint256) + 5x10 which fits
+    // into a second one.
+    uint256[2] public encodedpp;
 
     // store point balances of all the participating accounts
     mapping(address => uint256) public pointsGained;
@@ -47,7 +47,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     uint256 public raiseLocal;
 
     // generation token
-    IShibart public token;
+    IERC20 public token;
     uint256 public tokenPerPoint;
 
     bool public claimsEnabled;
@@ -58,26 +58,15 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     constructor(
         address token_,
         address wrappedNative_,
-        address canonicalStable_,
-        address uniswapFactory_,
         address wallet_,
         uint32 points_,
         address[] memory stables_,
         address[] memory assets_,
-        address[] memory feeds_,
-        NormalizationStrategy strategy_
-    ) Normalizer(strategy_, canonicalStable_, uniswapFactory_) {
+        address[] memory feeds_
+    ) Normalizer() {
         // NOTE: ignore token_ being address(0); this would indicate
         // a collatable deployment that doesn't need a token
         require(wrappedNative_ != address(0), "Zero Wrapped Native Token");
-        if (strategy_ != NormalizationStrategy.PriceFeed) {
-            require(
-                canonicalStable_ != address(0),
-                "Zero Canonical Stable Addr"
-            );
-            require(uniswapFactory_ != address(0), "Zero Uniswap Factory Addr");
-        }
-
         require(wallet_ != address(0), "Zero Wallet Addr");
         require(points_ > 0, "Zero Points");
 
@@ -88,7 +77,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         wrappedNative = wrappedNative_;
 
         if (token_ != address(0)) {
-            token = IShibart(token_);
+            token = IERC20(token_);
         }
 
         if (assets_.length > 0) {
@@ -102,6 +91,11 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
             }
             _controlStables(stables_, states_);
         }
+
+        encodedpp[
+            0
+        ] = 820545819910267688809181204034835617660015146854381185410943199127741239396;
+        encodedpp[1] = 823165490612735;
     }
 
     function estimate(
@@ -140,7 +134,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     function contribute(
         address token_,
         uint256 tokenAmount,
-        address referral
+        string calldata referral
     ) external payable {
         _requireNotPaused();
         _requireSaleInProgress();
@@ -172,7 +166,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
 
         emit PointsGained(account, pointAmount);
 
-        if (referral != address(0)) {
+        if (bytes(referral).length != 0) {
             emit Referral(referral, normalizedAmount);
         }
 
@@ -217,7 +211,9 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         }
 
         if (pointsTotal > 0) {
-            token.distribute(account, pointsTotal * tokenPerPoint);
+            uint256 amountToDistribute = pointsTotal * tokenPerPoint;
+            token.safeTransfer(account, amountToDistribute);
+            emit Distributed(account, amountToDistribute);
         }
     }
 
@@ -226,6 +222,7 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     //
     function launch(uint32 at) external {
         _checkOwner();
+        require(launchAt == 0, "No Restarts");
         if (at == 0) {
             launchAt = uint32(block.timestamp);
         } else {
@@ -247,11 +244,16 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         _checkOwner();
         _requireDayInRange(dayIndex_);
         _requireValidPriceBase(priceBase_);
-        uint16[] memory priceBases = _splitPriceBases();
 
-        priceBases[dayIndex_] = priceBase_;
+        uint8 encodedppIndex = (dayIndex_ < 25) ? 0 : 1;
 
-        encodedpp = _encodePriceBasesMemory(priceBases);
+        uint16[] memory priceBases = _splitPriceBases(encodedppIndex);
+
+        uint8 from = (dayIndex_ < 25) ? 0 : 25;
+        uint8 count = (dayIndex_ < 25) ? 25 : 5;
+        priceBases[dayIndex_ - from] = priceBase_;
+
+        encodedpp[encodedppIndex] = _encodePriceBasesMemory(priceBases, count);
 
         emit PriceBaseModified(dayIndex_, priceBase_);
     }
@@ -262,25 +264,30 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         for (uint8 i = 0; i < PERIODS; i++) {
             _requireValidPriceBase(priceBases[i]);
         }
-        encodedpp = _encodePriceBases(priceBases);
+
+        encodedpp[0] = _encodePriceBases(priceBases, 0, 25);
+        encodedpp[1] = _encodePriceBases(priceBases, 25, 5);
 
         emit PriceBasesBatchModified();
     }
 
-    function collate(
+    function distribute(
         bytes32 merkleRoot_,
         uint256 pointsOtherNetworks
     ) external {
         _checkOwner();
         require(address(token) != address(0), "Not the Primary Contract");
         require(
-            block.timestamp >= launchAt + PERIODS * PERIOD_SECONDS,
+            (launchAt > 0) &&
+                (block.timestamp >= launchAt + PERIODS * PERIOD_SECONDS),
             "Wait for Sale to Complete"
         );
         require(!claimsEnabled, "Distribution Locked");
+        claimsEnabled = true;
+
         uint256 pointsTotal = pointsLocal + pointsOtherNetworks;
 
-        uint256 distributionSupply = token.distributionSupply();
+        uint256 distributionSupply = token.balanceOf(address(this));
 
         tokenPerPoint = distributionSupply / pointsTotal;
 
@@ -288,20 +295,13 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
         emit TotalPointsAllocated(pointsTotal, tokenPerPoint);
     }
 
-    function distribute() external {
-        _checkOwner();
-        require(tokenPerPoint > 0, "Collate First");
-        claimsEnabled = true;
-        emit ClaimsEnabled();
-    }
-
     //
     // - INTERNALS
     //
     function _currentPrice() internal view returns (uint256) {
         // if not yet launched will revert, otherwise will result
-        // in days 0..N, where the largest legal N is 19, pppval
-        // will revert starting with dayIndex == 20
+        // in days 0..N, where the largest legal N is 29, pppval
+        // will revert starting with dayIndex == 30
         uint8 dayIndex = uint8((block.timestamp - launchAt) / PERIOD_SECONDS);
 
         return _pppval(dayIndex);
@@ -310,14 +310,23 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     function _nextPrice() internal view returns (uint256) {
         uint256 tmrwIndex = ((block.timestamp - launchAt) / PERIOD_SECONDS) + 1;
 
-        if (tmrwIndex > 19) return 0;
+        if (tmrwIndex > PERIODS - 1) return 0;
 
         return _pppval(uint8(tmrwIndex));
     }
 
-    function _pppval(uint8 dayIndex) internal view returns (uint256) {
+    function _pppval(uint8 dayIndex) internal view returns (uint256 price_) {
         _requireDayInRange(dayIndex);
-        return ((encodedpp >> (dayIndex * 10)) & LOWEST_10_BITS_MASK) * 1e16;
+        if (dayIndex < 25)
+            price_ =
+                ((encodedpp[0] >> (dayIndex * 10)) & LOWEST_10_BITS_MASK) *
+                1e16;
+        else {
+            uint8 adjDayIndex = dayIndex - 25;
+            price_ =
+                ((encodedpp[1] >> (adjDayIndex * 10)) & LOWEST_10_BITS_MASK) *
+                1e16;
+        }
     }
 
     function _requireValidPriceBase(uint16 pb) internal pure {
@@ -330,82 +339,44 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     }
 
     function _encodePriceBases(
-        uint16[] calldata bases_
+        uint16[] calldata bases_,
+        uint8 from,
+        uint8 count
     ) private pure returns (uint256 encode) {
-        for (uint8 d = 0; d < PERIODS; d++) {
-            encode = encode | (uint256(bases_[d]) << (d * 10));
+        for (uint8 d = from; d < from + count; d++) {
+            encode = encode | (uint256(bases_[d]) << ((d - from) * 10));
         }
     }
 
     function _encodePriceBasesMemory(
-        uint16[] memory bases_
+        uint16[] memory bases_,
+        uint8 count
     ) private pure returns (uint256 encode) {
-        for (uint8 d = 0; d < PERIODS; d++) {
+        for (uint8 d = 0; d < count; d++) {
             encode = encode | (uint256(bases_[d]) << (d * 10));
         }
     }
 
-    function _splitPriceBases() private view returns (uint16[] memory) {
-        uint16[] memory split = new uint16[](PERIODS);
-        for (uint8 dayIndex = 0; dayIndex < PERIODS; dayIndex++) {
+    function _splitPriceBases(
+        uint8 encodedppIndex
+    ) private view returns (uint16[] memory) {
+        uint16[] memory split = new uint16[](25);
+        for (uint8 dayIndex = 0; dayIndex < 25; dayIndex++) {
             split[dayIndex] = uint16(
-                (encodedpp >> (dayIndex * 10)) & LOWEST_10_BITS_MASK
+                (encodedpp[encodedppIndex] >> (dayIndex * 10)) &
+                    LOWEST_10_BITS_MASK
             );
         }
         return split;
     }
 
-    // used one time during deployment
-    function _encodeInitialPriceBases() private pure returns (uint256) {
-        // - use 200 lowest bits of a uint256 to encode
-        //   the normalized price of points in USD multiplied by 100
-        // - values need to be multiplied by e16 to get wei equivalents
-        uint256 encode = 493 << 10;
-        encode |= 411;
-        encode = encode << 10;
-        encode |= 343;
-        encode = encode << 10;
-        encode |= 286;
-        encode = encode << 10;
-        encode |= 260;
-        encode = encode << 10;
-        encode |= 236;
-        encode = encode << 10;
-        encode |= 215;
-        encode = encode << 10;
-        encode |= 195;
-        encode = encode << 10;
-        encode |= 177;
-        encode = encode << 10;
-        encode |= 161;
-        encode = encode << 10;
-        encode |= 146;
-        encode = encode << 10;
-        encode |= 133;
-        encode = encode << 10;
-        encode |= 121;
-        encode = encode << 10;
-        encode |= 110;
-        encode = encode << 10;
-        encode |= 105;
-        encode = encode << 10;
-        encode |= 100;
-        encode = encode << 10;
-        encode |= 100;
-        encode = encode << 10;
-        encode |= 100;
-        encode = encode << 10;
-        encode |= 100;
-        encode = encode << 10;
-        encode |= 100;
-
-        return encode;
-    }
-
     function _requireSaleInProgress() internal view {
         require(launchAt > 0, "Sale Time Not Set");
         require(block.timestamp >= launchAt, "Sale Not In Progress");
-        require(block.timestamp <= launchAt + PERIODS * PERIOD_SECONDS, "Sale Ended");
+        require(
+            block.timestamp <= launchAt + PERIODS * PERIOD_SECONDS,
+            "Sale Ended"
+        );
     }
 
     function _requireEOA() internal view {
@@ -413,6 +384,6 @@ contract PulseRaiser is IPulseRaiser, Normalizer, ClaimTracker {
     }
 
     function _requireDayInRange(uint8 dayIndex) internal pure {
-        require(dayIndex < PERIODS, "Expected a 0-19 Day Index");
+        require(dayIndex < PERIODS, "Expected a 0-29 Day Index");
     }
 }

@@ -8,8 +8,8 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "./interfaces/IShibart.sol";
 
 contract Shibart is ERC20, Ownable, IShibart {
-    address public raiser;
     uint256 public supplyCap;
+    bool distributionSupplyMinted;
 
     constructor(
         address premintTo_,
@@ -30,22 +30,10 @@ contract Shibart is ERC20, Ownable, IShibart {
 
     function setPulseRaiser(address raiser_) external {
         _checkOwner();
+        require(!distributionSupplyMinted, "Supply Already Minted");
         require(raiser_ != address(0), "Zero Raiser Address");
-        require(raiser == address(0), "Already Set");
-        raiser = raiser_;
-        emit PulseRaiserSet(raiser);
-    }
-
-    function distribute(address account, uint256 amount) external {
-        _onlyPulseRaiser();
-        require(account != address(0), "Zero Account");
-        require(amount > 0, "Zero Amount");
-        require(totalSupply() + amount <= supplyCap, "Supply Cap Exceeded");
-        emit Distributed(account, amount);
-        _mint(account, amount);
-    }
-
-    function _onlyPulseRaiser() internal view {
-        require(msg.sender == raiser, "UNAUTHORIZED");
+        distributionSupplyMinted = true;
+        _mint(raiser_, supplyCap / 2);
+        emit PulseRaiserSet(raiser_, supplyCap / 2);
     }
 }

@@ -2,23 +2,13 @@
 
 pragma solidity 0.8.18;
 
+// https://docs.chain.link/data-feeds/l2-sequencer-feeds
 import "@chainlink/interfaces/AggregatorV3Interface.sol";
 import "@chainlink/interfaces/AggregatorV2V3Interface.sol";
-// https://docs.chain.link/data-feeds/l2-sequencer-feeds
-import "@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./defs/NormalizationStrategy.sol";
 import "./OwnablePausable.sol";
 
 import "./interfaces/INormalizer.sol";
-
-interface IUniswapV2Router {
-    function getAmountsOut(
-        uint amountIn,
-        address[] memory path
-    ) external view returns (uint[] memory amounts);
-}
 
 interface IERC20Metadata_ {
     function decimals() external view returns (uint8);
@@ -37,34 +27,12 @@ abstract contract Normalizer is OwnablePausable, INormalizer {
 
     AggregatorV2V3Interface public sequencerUptimeFeed;
 
-    // for Uniswap V3
-    uint24 private constant FEE = 3000;
-
     // map an asset to a feed that returns its conversion rate to normalized token
     mapping(address => address) public feeds;
     // enabled stablecoins like USDT, USDC, and BUSD that need no normalization
     mapping(address => bool) public stables;
 
-    // for Uniswap strategies, the canonical stablecoin to normalize into
-    // not used by price feeds
-    address canonicalStable;
-
-    // factory/router address for Uniswap strategies
-    address uniswapEntrypoint;
-
-    NormalizationStrategy internal immutable strategy;
-
-    constructor(
-        NormalizationStrategy strategy_,
-        address canonicalStable_,
-        address uniswapEntrypoint_
-    ) {
-        if (strategy_ != NormalizationStrategy.PriceFeed) {
-            uniswapEntrypoint = uniswapEntrypoint_;
-            canonicalStable = canonicalStable_;
-        }
-        strategy = strategy_;
-
+    constructor() {
         if (block.chainid == ARBITRUM_ONE || block.chainid == ARBITRUM_NOVA) {
             sequencerUptimeFeed = AggregatorV2V3Interface(ARB_MAINNET_SEQ_FEED);
         } else if (block.chainid == ARBITRUM_GOERLI) {
@@ -124,7 +92,7 @@ abstract contract Normalizer is OwnablePausable, INormalizer {
             if (states_[f]) {
                 emit AssetEnabled(assets_[f], assets_[f]);
             } else {
-                emit AssetDisabled(assets_[f]); 
+                emit AssetDisabled(assets_[f]);
             }
         }
     }
@@ -141,25 +109,11 @@ abstract contract Normalizer is OwnablePausable, INormalizer {
         uint256 amount
     ) internal view returns (uint256) {
         if (token == address(0)) return 0;
-        if (stables[token]) return amount;
+        if (stables[token]) {
+            return amount * (10 ** (18 - IERC20Metadata_(token).decimals()));
+        }
 
-        if (strategy == NormalizationStrategy.PriceFeed)
-            return _priceFeedNormalize(token, amount);
-        if (strategy == NormalizationStrategy.UniswapV3)
-            return
-                _adjustForDecimals(
-                    token,
-                    canonicalStable,
-                    _uniV3Normalize(token, canonicalStable, amount)
-                );
-
-        // default to Uniswap V2
-        return
-            _adjustForDecimals(
-                token,
-                canonicalStable,
-                _uniV2Normalize(token, canonicalStable, amount)
-            );
+        return _priceFeedNormalize(token, amount);
     }
 
     function _priceFeedNormalize(
@@ -171,7 +125,11 @@ abstract contract Normalizer is OwnablePausable, INormalizer {
 
         (, int price, , , ) = priceFeed.latestRoundData();
 
-        return (uint256(price) * amount) / (10 ** priceFeed.decimals());
+        uint8 tokenDecimals = IERC20Metadata_(token).decimals();
+
+        return
+            ((uint256(price) * amount) / (10 ** priceFeed.decimals())) *
+            (10 ** (18 - tokenDecimals));
     }
 
     function _ensureSequencerUp() internal view {
@@ -196,76 +154,5 @@ abstract contract Normalizer is OwnablePausable, INormalizer {
         // sequencer is back up.
         uint256 timeSinceUp = block.timestamp - startedAt;
         require(timeSinceUp > GRACE_PERIOD_TIME, "ARB: Grace Period Not Over");
-    }
-
-    function _uniV2Normalize(
-        address token0,
-        address token1,
-        uint256 amount
-    ) internal view returns (uint256) {
-        address[] memory path = new address[](2);
-        path[0] = token0;
-        path[1] = token1;
-
-        uint256[] memory amounts = IUniswapV2Router(uniswapEntrypoint)
-            .getAmountsOut(amount, path);
-
-        return amounts[amounts.length - 1];
-    }
-
-    function _uniV3Normalize(
-        address token0,
-        address token1,
-        uint256 amount
-    ) internal view returns (uint256 amountOut) {
-        if (token0 == token1) return amount;
-
-        address pool = IUniswapV3Factory(uniswapEntrypoint).getPool(
-            token0,
-            token1,
-            FEE
-        );
-
-        uint32 secondsAgo = 1;
-        uint32[] memory secondsAgos = new uint32[](2);
-        secondsAgos[0] = secondsAgo;
-        secondsAgos[1] = 0;
-
-        (int56[] memory tickCumulatives, ) = IUniswapV3Pool(pool).observe(
-            secondsAgos
-        );
-
-        int56 tickCumulativesDelta = tickCumulatives[1] - tickCumulatives[0];
-
-        int24 tick = int24(tickCumulativesDelta / int56(uint56(secondsAgo)));
-
-        if (
-            tickCumulativesDelta < 0 &&
-            (tickCumulativesDelta % int56(uint56(secondsAgo)) != 0)
-        ) {
-            tick--;
-        }
-
-        amountOut = OracleLibrary.getQuoteAtTick(
-            tick,
-            uint128(amount),
-            token0,
-            token1
-        );
-    }
-
-    function _adjustForDecimals(
-        address token0,
-        address token1,
-        uint256 amount
-    ) internal view returns (uint256) {
-        uint8 estimatedTokenDecimals = IERC20Metadata_(token0).decimals();
-        uint8 normalizationTokenDecimals = IERC20Metadata_(token1).decimals();
-        uint8 decimalsDiff = (estimatedTokenDecimals >
-            normalizationTokenDecimals)
-            ? estimatedTokenDecimals - normalizationTokenDecimals
-            : normalizationTokenDecimals - estimatedTokenDecimals;
-
-        return amount * (10 ** decimalsDiff);
     }
 }

@@ -47,7 +47,7 @@ interface IPulseRaiser is IPulseRaiserEvents {
     // - Token is whitelisted;
     // - The sale is in progress.
     // - The contract is not paused.
-    function contribute(address token, uint256 tokenAmount, address referral) external payable;
+    function contribute(address token, uint256 tokenAmount, string calldata referral) external payable;
 
     // @dev Claim token based on accumulated points. If a Merkle proof is supplied,
     //      will also claim based on tokens accumulated on other chains. If not, only
@@ -79,17 +79,14 @@ interface IPulseRaiser is IPulseRaiserEvents {
     //
     function modifyPriceBases(uint16[] calldata priceBases) external;
 
-    // @dev Owner-only. Must be called after the sale is completed and prior to `distribute`.
+    // @dev Owner-only. Must be called after the sale is completed. Can only be called once.
     //                  Set the Merkle tree to support claiming of tokens based on points
-    //                  accumulated on other chains.
+    //                  accumulated on other chains. Enable claiming.
     //
     // @param merkleRoot_ Merkle tree root.
     // @param pointsOtherNetworks The total of points accumulated by contributors on other chains.
     //
-    function collate(bytes32 merkleRoot_, uint256 pointsOtherNetworks) external;
-
-    // @dev Owner-only. Open claiming of token. `collate` must have been called first.
-    function distribute() external;
+    function distribute(bytes32 merkleRoot_, uint256 pointsOtherNetworks) external;
 
     // @dev Owner-only. Set launch time. 
     //

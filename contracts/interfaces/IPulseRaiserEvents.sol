@@ -10,8 +10,9 @@ interface IPulseRaiserEvents {
         uint256 indexed pointsTotal,
         uint256 indexed tokenPerPoint
     );
-    event Referral(address indexed referral, uint256 indexed normalizedAmount);
+    event Referral(string indexed referral, uint256 indexed normalizedAmount);
     event RaiseWalletUpdated(address indexed oldWallet, address indexed newWallet);
     event ClaimsEnabled();
     event LaunchTimeSet(uint32 indexed launchTimestamp);
+    event Distributed(address indexed account, uint256 indexed amount);
 }

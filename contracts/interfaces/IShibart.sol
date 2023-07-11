@@ -9,5 +9,5 @@ interface IShibart is IShibartEvents {
 
     function setPulseRaiser(address raiser_) external;
 
-    function distribute(address account, uint256 amount) external;
+    // function distribute(address account, uint256 amount) external;
 }
